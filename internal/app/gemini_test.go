@@ -15,6 +15,7 @@ func TestModelHeader(t *testing.T) {
 		{"gemini-3.6-flash", hexFlash36},
 		{"gemini-3.5-flash-lite", hexFlashLite},
 		{"gemini-3.1-pro", hexPro31},
+		{"gemini-4-argon", hexArgon4},
 	}
 	for _, c := range cases {
 		name, mc, err := resolveModel(c.name)
@@ -50,15 +51,15 @@ func TestModelHeader(t *testing.T) {
 		}
 	}
 	// 守的是「不许冒出假模型」：thinking 版复用同样的 hex，所以看**去重后的 hex 数**，
-	// 不是条目数。服务端清单（otAQ7b）里 3.6/3.5-lite/3.1-pro + 灰度放出的 3.7 = 4 个。
+	// 不是条目数。服务端清单（otAQ7b）里已确认的模型 ID 共 5 个（含 Gemini 4 Argon）。
 	hexes := map[string]bool{}
 	for _, m := range Models {
 		hexes[m.HexID] = true
 	}
-	if len(hexes) != 4 {
-		t.Errorf("只应存在 4 个真模型 hex, got %d", len(hexes))
+	if len(hexes) != 5 {
+		t.Errorf("只应存在 5 个真模型 hex, got %d", len(hexes))
 	}
-	// 反过来：每个真 hex 都应该有一个 thinking 版
+	// 现有支持扩展思考的四个模型 hex 都应该有 thinking 版；Argon 暂不虚构 thinking 别名。
 	for _, base := range []string{hexFlash36, hexFlashLite, hexPro31, hexFlash38} {
 		found := false
 		for _, m := range Models {
@@ -69,6 +70,17 @@ func TestModelHeader(t *testing.T) {
 		if !found {
 			t.Errorf("hex %s 缺 thinking 版", base)
 		}
+	}
+	_, argon, err := resolveModel("gemini-4-argon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argon.Mode != 8 {
+		t.Errorf("Argon mode=%d want 8", argon.Mode)
+	}
+	wantArgonHeader := `[1,null,null,null,"95a4c0abcba24364",null,null,0,[4,5,6,8,16,19,20,4,5,6,8,16,19,20],null,null,1,null,null,8,1,"test-uuid"]`
+	if got := buildModelHeader(argon.HexID, argon.Mode, thinkingNormal, "test-uuid", argon.HeaderFeatures...); got != wantArgonHeader {
+		t.Errorf("Argon header=%s want %s", got, wantArgonHeader)
 	}
 }
 
@@ -254,6 +266,9 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	if _, ok := availableModels()["gemini-3.1-pro"]; ok {
 		t.Error("无 cookie 时不该暴露 3.1 Pro")
 	}
+	if _, ok := availableModels()["gemini-4-argon"]; ok {
+		t.Error("无 cookie 时不该暴露 Gemini 4 Argon")
+	}
 	// inner[80]（扩展思考）只在登录态生效，匿名带上服务端静默忽略，
 	// 所以 thinking 版跟 3.1 Pro 一样不能暴露
 	for name, m := range availableModels() {
@@ -276,6 +291,12 @@ func TestProHiddenWithoutCookie(t *testing.T) {
 	}
 
 	withPoolCookie(t)
+	if _, ok := availableModels()["gemini-4-argon"]; !ok {
+		t.Error("配了 cookie 时应暴露 Gemini 4 Argon")
+	}
+	if _, _, err := resolveModel("gemini-4-argon"); err != nil {
+		t.Errorf("配了 cookie 时 Argon 不应报错: %v", err)
+	}
 	if _, ok := availableModels()["gemini-3.1-pro"]; !ok {
 		t.Error("配了 cookie 时应暴露 3.1 Pro")
 	}

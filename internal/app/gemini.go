@@ -21,6 +21,7 @@ const (
 	hexFlash36   = "fbb127bbb056c959" // 3.6 Flash
 	hexFlashLite = "cf41b0e0dd7d53e5" // 3.5 Flash-Lite
 	hexPro31     = "9d8ca3786ebdfbea" // 3.1 Pro
+	hexArgon4    = "95a4c0abcba24364" // Gemini 4 Argon (由网页端 StreamGenerate 请求头实测)
 	// 3.7 Flash：按账号灰度放出。hex 是 otAQ7b 里 3.7 条目的**主 hex**（第一个元素），
 	// 两个独立已灰度账号的清单里都是它、且有 3.7 号的用户实测发它回报 "3.7 Flash"
 	// （issue #4 / PR #11）。注意别用 compat 列表里那个 797f3d0293f288ad —— 那是
@@ -54,6 +55,9 @@ type ModelConfig struct {
 	HexID string
 	Mode  int
 	Desc  string
+	// HeaderFeatures 覆盖 x-goog-ext-525001261-jspb 下标 8 的特性列表。
+	// nil 时使用通用模型默认值 [4,5,6,8]。
+	HeaderFeatures []int
 	// Thinking 为真时填 inner[80]=2，即网页 UI 上的「扩展思考」。跟 HexID 正交
 	// —— 三个模型都能开，不是某个专属模型。
 	Thinking bool
@@ -77,6 +81,9 @@ var Models = map[string]ModelConfig{
 	// gemini-3.7-flash 保留为别名（同 hex）。
 	"gemini-3.8-flash": {HexID: hexFlash38, Mode: 1, Desc: "3.8 Flash; needs a signed-in PAID Google account (free accounts get downgraded to 3.5 Flash-Lite)"},
 	"gemini-3.7-flash": {HexID: hexFlash38, Mode: 1, Desc: "alias of gemini-3.8-flash (same hex; Google renamed 3.7→3.8)"},
+	// Argon 的网页请求抓包使用独立模型 ID、mode=8，以及专属特性列表。
+	// 需要登录态，避免匿名时上游回落到其他模型。
+	"gemini-4-argon": {HexID: hexArgon4, Mode: 8, HeaderFeatures: []int{4, 5, 6, 8, 16, 19, 20, 4, 5, 6, 8, 16, 19, 20}, Desc: "Gemini 4 Argon; requires a signed-in Google account"},
 
 	// 扩展思考版。inner[80]=2 跟模型 hex 正交，都能开；但只在登录态生效，
 	// 所以跟 3.1 Pro 一样在没 cookie 时不暴露。
@@ -110,7 +117,7 @@ func hasCookie() bool {
 // 逐模型核对等价：那三个正名的 HexID 就是 hexPro31 / hexFlash38，其余登录模型都被
 // Thinking 或 Tool 覆盖。
 func modelNeedsLogin(mc ModelConfig) bool {
-	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.Thinking || mc.Tool > 0
+	return mc.HexID == hexPro31 || mc.HexID == hexFlash38 || mc.HexID == hexArgon4 || mc.Thinking || mc.Tool > 0
 }
 
 // anonFirstEligible 判断「匿名优先」开关下这次请求能不能走匿名（不占 cookie 账号）：
@@ -554,7 +561,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		thinkVal = thinkingExtended
 	}
 	// 抓包里 header 下标 16 和 inner[59] 是两个不同的 uuid，各生成各的。
-	modelHeader := buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString())
+	modelHeader := buildModelHeader(mc.HexID, mc.Mode, thinkVal, uuid.NewString(), mc.HeaderFeatures...)
 	sessionHeader := fmt.Sprintf(`["%s",1]`, reqUUID)
 
 	geminiHeaders := buildGeminiHeaders(cookieStr, sapisid, mc.HexID)
@@ -744,13 +751,17 @@ func extractUpstreamModel(raw string) string {
 // x-goog-ext-525005358-jspb。两份抓包都是这个规律，别图省事复用同一个。
 //
 // uuid 留空时退回最小形式（匿名路径不需要这些槽位，少发一截更省事）。
-func buildModelHeader(hexID string, mode, think int, uuid string) string {
+func buildModelHeader(hexID string, mode, think int, uuid string, headerFeatures ...int) string {
 	if uuid == "" {
 		return fmt.Sprintf(`[1,null,null,null,"%s"]`, hexID)
 	}
+	if len(headerFeatures) == 0 {
+		headerFeatures = []int{4, 5, 6, 8}
+	}
+	featuresJSON, _ := json.Marshal(headerFeatures)
 	return fmt.Sprintf(
-		`[1,null,null,null,"%s",null,null,0,[4,5,6,8],null,null,1,null,null,%d,%d,"%s"]`,
-		hexID, mode, think, uuid)
+		`[1,null,null,null,"%s",null,null,0,%s,null,null,1,null,null,%d,%d,"%s"]`,
+		hexID, featuresJSON, mode, think, uuid)
 }
 
 // buildGeminiHeaders 准备 StreamGenerate 必需的应用层 header。
